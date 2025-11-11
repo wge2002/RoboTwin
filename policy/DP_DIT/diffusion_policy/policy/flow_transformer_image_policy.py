@@ -3,7 +3,6 @@ import torch
 import torch.nn as nn
 import torch.nn.functional as F
 from einops import rearrange, reduce
-from diffusers.schedulers.scheduling_ddpm import DDPMScheduler
 
 from diffusion_policy.model.common.normalizer import LinearNormalizer
 from diffusion_policy.policy.base_image_policy import BaseImagePolicy
@@ -13,12 +12,36 @@ from diffusion_policy.model.vision.multi_image_obs_encoder import MultiImageObsE
 from diffusion_policy.common.pytorch_util import dict_apply
 
 
-class DiffusionTransformerImagePolicy(BaseImagePolicy):
+class FlowMatchingScheduler:
+    """
+    Simple Flow Matching scheduler for continuous time generative modeling.
+    """
+    def __init__(self, num_train_timesteps=100):
+        self.num_train_timesteps = num_train_timesteps
+
+    def set_timesteps(self, num_inference_steps):
+        self.num_inference_steps = num_inference_steps
+        # Create timesteps from 1 to 0 (reverse order for inference)
+        self.timesteps = torch.linspace(1.0, 0.0, num_inference_steps)
+
+    def step(self, model_output, timestep, sample):
+        """
+        Simplified Euler step for Flow Matching.
+        In Flow Matching, model_output is the velocity field.
+        """
+        dt = 1.0 / self.num_inference_steps
+        # Euler step: x_{t+1} = x_t + dt * v(x_t, t)
+        # Since we're going backwards from t=1 to t=0, we subtract the velocity
+        prev_sample = sample - dt * model_output
+        return prev_sample
+
+
+class FlowTransformerImagePolicy(BaseImagePolicy):
 
     def __init__(
         self,
         shape_meta: dict,
-        noise_scheduler: DDPMScheduler,
+        noise_scheduler: FlowMatchingScheduler,
         obs_encoder: MultiImageObsEncoder,
         horizon,
         n_action_steps,
@@ -36,7 +59,7 @@ class DiffusionTransformerImagePolicy(BaseImagePolicy):
         **kwargs,
     ):
         super().__init__()
-        print('Initializing DiffusionTransformerImagePolicy')
+        print('Initializing FlowTransformerImagePolicy')
         # parse shapes
         action_shape = shape_meta["action"]["shape"]
         assert len(action_shape) == 1
@@ -44,7 +67,7 @@ class DiffusionTransformerImagePolicy(BaseImagePolicy):
         # get feature dim
         obs_feature_dim = obs_encoder.output_shape()[0]
 
-        # create diffusion model
+        # create flow matching model
         input_dim = action_dim + obs_feature_dim
         global_cond_dim = None
         if obs_as_global_cond:
@@ -91,7 +114,7 @@ class DiffusionTransformerImagePolicy(BaseImagePolicy):
 
 
         if num_inference_steps is None:
-            num_inference_steps = noise_scheduler.config.num_train_timesteps
+            num_inference_steps = noise_scheduler.num_train_timesteps
         self.num_inference_steps = num_inference_steps
 
     # ========= inference  ============
@@ -108,6 +131,7 @@ class DiffusionTransformerImagePolicy(BaseImagePolicy):
         model = self.model
         scheduler = self.noise_scheduler
 
+        # Initialize with noise
         trajectory = torch.randn(
             size=condition_data.shape,
             dtype=condition_data.dtype,
@@ -115,20 +139,25 @@ class DiffusionTransformerImagePolicy(BaseImagePolicy):
             generator=generator,
         )
 
-        # set step values
+        # Set timesteps for ODE solver
         scheduler.set_timesteps(self.num_inference_steps)
 
-        for t in scheduler.timesteps:
-            # 1. apply conditioning
+        # Flow matching ODE integration using Euler method
+        for i, t in enumerate(scheduler.timesteps):
+            # Apply conditioning
             trajectory[condition_mask] = condition_data[condition_mask]
 
-            # 2. predict model output
-            model_output = model(trajectory, t, cond=global_cond)
+            # Predict velocity (flow vector)
+            velocity = model(trajectory, t, cond=global_cond)
 
-            # 3. compute previous image: x_t -> x_t-1
-            trajectory = scheduler.step(model_output, t, trajectory, generator=generator, **kwargs).prev_sample
+            # Only update unconditioned parts (mask out conditioned parts)
+            velocity[condition_mask] = 0.0
 
-        # finally make sure conditioning is enforced
+            # Euler step for ODE: dx/dt = v(x,t)
+            # Going backwards from t=1 to t=0, so subtract velocity
+            trajectory = scheduler.step(velocity, t, trajectory)
+
+        # Final conditioning enforcement
         trajectory[condition_mask] = condition_data[condition_mask]
 
         return trajectory
@@ -231,19 +260,17 @@ class DiffusionTransformerImagePolicy(BaseImagePolicy):
         # generate impainting mask
         condition_mask = self.mask_generator(trajectory.shape)
 
-        # Sample noise that we'll add to the images
+        # Sample noise for flow matching
         noise = torch.randn(trajectory.shape, device=trajectory.device)
         bsz = trajectory.shape[0]
-        # Sample a random timestep for each image
-        timesteps = torch.randint(
-            0,
-            self.noise_scheduler.config.num_train_timesteps,
-            (bsz, ),
-            device=trajectory.device,
-        ).long()
-        # Add noise to the clean images according to the noise magnitude at each timestep
-        # (this is the forward diffusion process)
-        noisy_trajectory = self.noise_scheduler.add_noise(trajectory, noise, timesteps)
+
+        # Sample random timesteps (continuous time for flow matching)
+        timesteps = torch.rand(bsz, device=trajectory.device)
+
+        # Flow matching: create noisy trajectory
+        # x_t = (1-t)*noise + t*trajectory
+        noisy_trajectory = (1 - timesteps.unsqueeze(-1).unsqueeze(-1)) * noise + \
+                          timesteps.unsqueeze(-1).unsqueeze(-1) * trajectory
 
         # compute loss mask
         loss_mask = ~condition_mask
@@ -251,18 +278,14 @@ class DiffusionTransformerImagePolicy(BaseImagePolicy):
         # apply conditioning
         noisy_trajectory[condition_mask] = cond_data[condition_mask]
 
-        # Predict the noise residual
-        pred = self.model(noisy_trajectory, timesteps, cond=global_cond)
+        # Predict velocity (flow vector)
+        pred_velocity = self.model(noisy_trajectory, timesteps, cond=global_cond)
 
-        pred_type = self.noise_scheduler.config.prediction_type
-        if pred_type == "epsilon":
-            target = noise
-        elif pred_type == "sample":
-            target = trajectory
-        else:
-            raise ValueError(f"Unsupported prediction type {pred_type}")
+        # Target velocity for flow matching: trajectory - noise
+        target_velocity = trajectory - noise
 
-        loss = F.mse_loss(pred, target, reduction="none")
+        # Compute loss only on unconditioned parts
+        loss = F.mse_loss(pred_velocity, target_velocity, reduction="none")
         loss = loss * loss_mask.type(loss.dtype)
         loss = reduce(loss, "b ... -> b (...)", "mean")
         loss = loss.mean()
