@@ -1,5 +1,6 @@
 name: task_config
 
+model_name: "dp_dit"
 image_shape: &image_shape [3, -1, -1]
 shape_meta: &shape_meta
   # acceptable types: rgb, low_dim

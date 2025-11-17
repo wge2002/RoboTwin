@@ -6,6 +6,7 @@ expert_data_num=${3}
 seed=${4}
 action_dim=${5}
 gpu_id=${6}
+model_name=DP
 
 head_camera_type=D435
 

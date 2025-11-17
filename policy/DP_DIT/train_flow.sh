@@ -6,6 +6,7 @@ expert_data_num=50
 seed=0
 action_dim=14
 gpu_id=${1}
+model_name=Flow
 
 head_camera_type=D435
 
@@ -41,6 +42,7 @@ fi
 
 python train.py --config-name=${config_name}.yaml \
                             task.name=${task_name} \
+                            task.model_name=${model_name} \
                             task.dataset.zarr_path="data/${task_name}-${task_config}-${expert_data_num}.zarr" \
                             training.debug=$DEBUG \
                             training.seed=${seed} \
