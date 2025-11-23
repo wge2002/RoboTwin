@@ -1,7 +1,7 @@
 #!/bin/bash
 
 # == keep unchanged ==
-policy_name=DP
+policy_name=DP_DIT
 task_name=${1}
 task_config=${2}
 ckpt_setting=${3}
