@@ -22,7 +22,7 @@ class FlowMatchingScheduler:
     def set_timesteps(self, num_inference_steps):
         self.num_inference_steps = num_inference_steps
         # Create timesteps from 1 to 0 (reverse order for inference)
-        self.timesteps = torch.linspace(1.0, 0.0, num_inference_steps)
+        self.timesteps = torch.linspace(0.0, 1.0, num_inference_steps)
 
     def step(self, model_output, timestep, sample):
         """
@@ -32,7 +32,7 @@ class FlowMatchingScheduler:
         dt = 1.0 / self.num_inference_steps
         # Euler step: x_{t+1} = x_t + dt * v(x_t, t)
         # Since we're going backwards from t=1 to t=0, we subtract the velocity
-        prev_sample = sample - dt * model_output
+        prev_sample = sample + dt * model_output
         return prev_sample
 
 
@@ -146,9 +146,11 @@ class FlowTransformerImagePolicy(BaseImagePolicy):
         for i, t in enumerate(scheduler.timesteps):
             # Apply conditioning
             trajectory[condition_mask] = condition_data[condition_mask]
+            
 
+            t_input = torch.full((trajectory.shape[0],), t, device=trajectory.device) * 1000
             # Predict velocity (flow vector)
-            velocity = model(trajectory, t, cond=global_cond)
+            velocity = model(trajectory, t_input, cond=global_cond)
 
             # Only update unconditioned parts (mask out conditioned parts)
             velocity[condition_mask] = 0.0
@@ -279,7 +281,7 @@ class FlowTransformerImagePolicy(BaseImagePolicy):
         noisy_trajectory[condition_mask] = cond_data[condition_mask]
 
         # Predict velocity (flow vector)
-        pred_velocity = self.model(noisy_trajectory, timesteps, cond=global_cond)
+        pred_velocity = self.model(noisy_trajectory, timesteps*1000, cond=global_cond)
 
         # Target velocity for flow matching: trajectory - noise
         target_velocity = trajectory - noise
