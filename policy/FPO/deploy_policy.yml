@@ -1,0 +1,12 @@
+# Basic experiment configuration
+policy_name: DP_DIT
+task_name: null
+task_config: null
+ckpt_setting: null
+seed: null
+instruction_type: unseen
+
+expert_data_num: null
+checkpoint_num: 600
+model_name: null  # 新增：模型名称，用于新的checkpoint路径结构
+head_camera_type: D435
