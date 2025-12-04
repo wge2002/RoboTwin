@@ -6,7 +6,7 @@ expert_data_num=50
 seed=0
 action_dim=14
 gpu_id=${1}
-model_name=flow
+model_name=fpo
 
 head_camera_type=D435
 

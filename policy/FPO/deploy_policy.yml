@@ -1,5 +1,5 @@
 # Basic experiment configuration
-policy_name: DP_DIT
+policy_name: FPO
 task_name: null
 task_config: null
 ckpt_setting: null
