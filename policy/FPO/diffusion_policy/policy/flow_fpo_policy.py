@@ -9,7 +9,7 @@ from diffusion_policy.policy.base_image_policy import BaseImagePolicy
 from diffusion_policy.model.diffusion.transformer_for_diffusion import TransformerForDiffusion
 from diffusion_policy.model.vision.multi_image_obs_encoder import MultiImageObsEncoder
 from diffusion_policy.common.pytorch_util import dict_apply
-
+import copy
 
 class FlowMatchingScheduler:
     """
@@ -53,6 +53,8 @@ class FlowFPOPolicy(BaseImagePolicy):
         p_drop_emb=0.1,
         p_drop_attn=0.1,
         causal_attn=False,
+        # critic
+        critic_hidden_dims=(256, 256, 256),
         **kwargs,
     ):
         super().__init__()
@@ -61,18 +63,24 @@ class FlowFPOPolicy(BaseImagePolicy):
         # =====================================================
         # 1. 强制约束检查：确保真的是 Horizon=1 的 MDP 设定
         # =====================================================
-        if n_action_steps != 1:
-            raise ValueError(f"FPO Policy requires n_action_steps=1, got {n_action_steps}")
-        if n_obs_steps != 1:
-            raise ValueError(f"FPO Policy requires n_obs_steps=1, got {n_obs_steps}")
+        # if n_action_steps != 1:
+        #     raise ValueError(f"FPO Policy requires n_action_steps=1, got {n_action_steps}")
+        # if n_obs_steps != 1:
+        #     raise ValueError(f"FPO Policy requires n_obs_steps=1, got {n_obs_steps}")
         # 虽然 horizon 参数可能在 yaml 里写了 16，但在这里我们强制把它覆盖为 1
         # 或者报错。为了安全起见，我们在这里强制覆盖内部使用，并打印警告。
-        if horizon != 1:
-            print(f"Warning: Config horizon is {horizon}, but FlowFPOPolicy enforces horizon=1.")
+        # if horizon != 1:
+        #     print(f"Warning: Config horizon is {horizon}, but FlowFPOPolicy enforces horizon=1.")
         
-        self.horizon = 1  # 强制为 1
-        self.n_action_steps = 1
-        self.n_obs_steps = 1
+        # self.horizon = 1  # 强制为 1
+        # self.n_action_steps = 1
+        # self.n_obs_steps = 1
+
+        print('Init FPO policy.')
+        self.horizon = horizon
+        self.n_action_steps = n_action_steps
+        self.n_obs_steps = n_obs_steps
+        print(f"horizon: {self.horizon}, n_action_steps: {self.n_action_steps}, n_obs_steps: {self.n_obs_steps}")   
 
         # 2. 解析形状
         action_shape = shape_meta["action"]["shape"]
@@ -104,7 +112,17 @@ class FlowFPOPolicy(BaseImagePolicy):
             obs_as_cond=True, # 使用 Global Conditioning
         )
 
+        critic_layers = []
+        input_dim = global_cond_dim
+        for hidden_dim in critic_hidden_dims:
+            critic_layers.append(nn.Linear(input_dim, hidden_dim))
+            critic_layers.append(nn.ReLU()) # 或 nn.SiLU()
+            input_dim = hidden_dim
+        critic_layers.append(nn.Linear(input_dim, 1)) # 输出 Value
+        self.critic = nn.Sequential(*critic_layers)
+
         self.obs_encoder = obs_encoder
+        self.obs_encoder_critic = copy.deepcopy(obs_encoder)
         self.noise_scheduler = FlowMatchingScheduler()
         self.normalizer = LinearNormalizer()
         
@@ -170,17 +188,19 @@ class FlowFPOPolicy(BaseImagePolicy):
         # 输入形状通常是 (B, n_obs_steps, C, H, W)
         # 我们只取这一帧：(B, C, H, W)
         # 假设 obs_dict 的 tensor 是 [B, T, ...]，这里 T=1
-        this_nobs = dict_apply(nobs, lambda x: x[:, 0, ...]) 
+        # this_nobs = dict_apply(nobs, lambda x: x[:, 0, ...]) 
+        this_nobs = dict_apply(nobs, lambda x: x[:, :self.n_obs_steps, ...].reshape(-1, *x.shape[2:]))
         
         # ResNet 输出: (B, D_feat)
         nobs_features = self.obs_encoder(this_nobs)
         
         # 3. 采样
-        batch_size = nobs_features.shape[0]
+        batch_size = next(iter(obs_dict.values())).shape[0]
+        global_cond = nobs_features.reshape(batch_size, -1)
         # 返回 (B, 1, D)
         n_action = self.conditional_sample(
             batch_size=batch_size,
-            global_cond=nobs_features
+            global_cond=global_cond
         )
 
         # 4. 反归一化
@@ -336,3 +356,20 @@ class FlowFPOPolicy(BaseImagePolicy):
         )
         
         return loss
+
+    def predict_value(self, obs_dict: Dict[str, torch.Tensor]) -> torch.Tensor:
+        """
+        输入: Obs Dict
+        输出: Value (B, 1)
+        """
+        # 这里先默认共享梯度
+        nobs = self.normalizer.normalize(obs_dict)
+        this_nobs = dict_apply(nobs, lambda x: x[:, :self.n_obs_steps, ...].reshape(-1, *x.shape[2:]))
+        nobs_features = self.obs_encoder_critic(this_nobs)
+        batch_size = next(iter(obs_dict.values())).shape[0]
+        global_cond = nobs_features.reshape(batch_size, -1)
+        
+        # 2. MLP Forward
+        value = self.critic(global_cond)
+        
+        return value

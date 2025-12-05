@@ -9,5 +9,6 @@ description = "Diffusion policy for RoboTwin"
 requires-python = ">=3.8"
 dependencies = [
     "hydra-core==1.2.0",
-    "numba"
+    "numba",
+    "easydict==1.13",
 ]
