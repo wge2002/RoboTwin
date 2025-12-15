@@ -92,6 +92,13 @@ training:
   seed: 42
   debug: False
   resume: True
+  # RL
+  max_iterations: 1000    # 总训练轮次
+  rollout_steps: 2048     # 每次 Rollout 步数
+  ppo_epochs: 4           # 每次更新跑几个 Epoch
+  batch_size: 64          # Update 的 Batch Size
+  clip_epsilon: 0.2       # PPO Clip 阈值
+  critic_coef: 0.5        # Value Loss 权重 
   # optimization
   lr_scheduler: cosine
   lr_warmup_steps: 500

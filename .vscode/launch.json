@@ -1,0 +1,39 @@
+{
+    "version": "0.2.0",
+    "configurations": [
+        {
+            "name": "Train FPO RL (Root Mode)",
+            "type": "debugpy",
+            "request": "launch",
+            "program": "${workspaceFolder}/policy/FPO/train_fpo.py",
+            "console": "integratedTerminal",
+            
+            // 1. 强制在根目录运行 (解决 assets 找不到)
+            "cwd": "${workspaceFolder}",
+            
+            "env": {
+                "CUDA_VISIBLE_DEVICES": "0",
+                "HYDRA_FULL_ERROR": "1",
+                // 2. 将 FPO 目录加入路径 (解决 import diffusion_policy 找不到)
+                "PYTHONPATH": "${workspaceFolder}/policy/FPO:${env:PYTHONPATH}"
+            },
+            "args": [
+                "--config-name=robot_fpo_14.yaml",
+                "task.name=stack_blocks_two",
+                "task.model_name=fpo",
+                // 3. 修正数据路径 (相对于根目录)
+                "task.dataset.zarr_path=policy/FPO/data/stack_blocks_two-demo_clean-50.zarr",
+                "training.debug=False",
+                "training.seed=0",
+                "training.device=cuda:0",
+                "setting=demo_clean",
+                "exp_name=stack_blocks_two-robot_fpo-train_rl",
+                "logging.mode=online",
+                "head_camera_type=D435",
+                "training.max_iterations=1000",
+                "training.rollout_steps=2048",
+                "training.ppo_epochs=4"
+            ]
+        }
+    ]
+}
